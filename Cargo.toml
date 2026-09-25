@@ -1,0 +1,19 @@
+cargo-features = ["panic-immediate-abort"]
+
+[workspace]
+resolver = "2"
+# lr1121 is deliberately absent: it is its own workspace so that the directory
+# can be published as a standalone library. `make` builds it by recursing.
+members = ["meshtastic"]
+
+[profile.dev]
+# The staticlib artifact is no_std, which cannot use unwinding panics.
+panic = "abort"
+
+[profile.release]
+# Panic messages and their location statics land in .rodata, which the native
+# .mpy linker cannot relocate; immediate-abort keeps them out. `core` has to be
+# rebuilt under the same strategy -- see meshtastic/natmod/Makefile.
+panic = "immediate-abort"
+opt-level = "z"
+codegen-units = 1
