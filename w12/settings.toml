@@ -1,0 +1,55 @@
+# Settings for the Meshnology W12. Copy to the root of CIRCUITPY.
+#
+# CircuitPython reads this file itself before any of our code runs, which is the
+# only reason it exists: a key the supervisor acts on cannot live in NVM with
+# the node's own settings. Its TOML subset understands strings, integers,
+# floats, booleans and comments, but it ignores [table] headers, so the keys are
+# flat and prefixed rather than grouped.
+
+# Which radio adapter `meshradio.open_radio()` builds. The library ships both,
+# and the default is the LR1121 that the other board in this tree carries. Left
+# unset here, the node comes up talking to a chip that is not on this board and
+# fails at the first SPI reply.
+MESH_RADIO = "lr2021"
+
+# Which module supplies the GNSS reader the node takes its clock and position
+# from. Only this board has a receiver, so the library asks rather than assumes;
+# unset, the node falls back to a connected client and then to the mesh. The
+# L76K is on a header the vendor's variant file calls unpopulated -- it is
+# populated. Dotted because the driver ships inside the meshtastic package;
+# `open_gps` walks the name, so either shape works.
+MESH_GPS = "meshtastic.gps"
+
+# What this node calls itself. Both are commented out on purpose: left unset,
+# the node derives "Meshtastic da67" and "da67" from the last four digits of
+# its own number, which is exactly what stock firmware does and means a board
+# straight out of this tree is indistinguishable from one running Meshtastic.
+# These are the equivalent of the firmware's USERPREFS_CONFIG_OWNER_LONG_NAME
+# and _SHORT_NAME build flags: a name baked in before anyone has touched it.
+#
+# A rename from the phone goes to NVM and wins over both, so once the app has
+# set a name these stop having any effect. `configure(long_name=None)` clears
+# the NVM record and hands this file its say back.
+# MESH_LONG_NAME = "Meshnology W12"
+# MESH_SHORT_NAME = "W12"
+
+# Which transport `mesh.phone()` opens for the Meshtastic app: "ble" for the
+# mesh service the app scans for, "tcp" for the Network entry on its connect
+# screen. They carry the same protobufs through the same `meshapi.PhoneAPI`.
+#
+# This board is on "tcp" because its BLE will not advertise -- `_bleio` is in
+# the image and takes every call without complaint, and nothing scanning ever
+# sees it. That is unexplained and below our code. Meanwhile the ESP32-S3 has
+# a radio the app already knows how to use, and the same network these two
+# keys name.
+MESH_PHONE = "tcp"
+
+# The network `gpsweb.serve()` reports the GNSS on, and `mesh.phone()` serves
+# the app on. The supervisor reads these two itself and is usually connected
+# before any of our code runs, which is why `meshtcp.tcp_join()` normally finds
+# the link already up.
+#
+# Leave CIRCUITPY_WEB_API_PASSWORD unset. Setting it starts CircuitPython's own
+# web workflow, which takes port 80 and leaves `serve()` nothing to bind.
+# CIRCUITPY_WIFI_SSID = "your network"
+# CIRCUITPY_WIFI_PASSWORD = "your password"
