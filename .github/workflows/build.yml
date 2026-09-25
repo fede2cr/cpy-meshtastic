@@ -1,0 +1,246 @@
+# Builds the meshtastic modules for the ESP32-S3 and runs the tests.
+#
+# No trigger of its own: ci.yml calls it on a push and release.yml calls it on
+# a tag, so what ships is built the way CI already proved the branch builds.
+#
+# One architecture. A natmod carries machine code, so the Rust half is per
+# instruction set, and `xtensawin` is the one the ESP32-S3 runs. The Thumb
+# build the nRF52840 needs is not published here yet: its board is still a
+# draft upstream, and there is no point shipping modules for an image nobody
+# can build. `make` (not `make w12`) is the target that produces it when that
+# changes.
+#
+# No firmware image either. The modules are what this repository releases; the
+# radio driver ships from its own repository, and a UF2 would need the board.
+#
+# THIS WILL NOT BUILD AGAINST STOCK CIRCUITPYTHON. The Rust half is a native
+# module, and stock `tools/mpy_ld.py` rejects the relocations rustc emits for
+# Xtensa: LLVM writes R_XTENSA_NONE no-op entries that GAS does not, encodes
+# `l32r` differently, and puts the jump table of a dense `match` in .rodata.
+# The fix is in the host linker script, so it cannot be carried here. The
+# `cpy-rust` branch has it, and is enough: nothing in this artifact needs the
+# board, the pin interrupts or the _bleio queue that live on other branches.
+
+name: build
+
+on:
+  workflow_call:
+    inputs:
+      circuitpython_repo:
+        description: Fork carrying the Rust natmod linker patches
+        type: string
+        default: fede2cr/circuitpython
+      circuitpython_ref:
+        description: Ref within that fork
+        type: string
+        default: cpy-rust
+      version:
+        description: Version stamped into the artifact names
+        type: string
+        default: 0.0.0+dev
+
+permissions:
+  contents: read
+
+jobs:
+  # Cheapest job and the one that fails most often, so it runs on its own
+  # rather than behind a toolchain install.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install the Rust toolchain
+        run: rustup toolchain install nightly --component rust-src
+
+      - name: Rust unit tests
+        # --lib is required, not tidiness: the crate builds with
+        # panic-immediate-abort, and the doc and integration harnesses want
+        # unwinding, which is not available without std.
+        run: cargo +nightly test --lib -p meshtastic
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the host test dependencies
+        # hoststub stands in for `aesio` with the real AES from cryptography,
+        # so the host arrives at the same ciphertext the board does. It is the
+        # only third-party import in the test path, and setup-python gives a
+        # clean interpreter that does not carry it.
+        run: pip install cryptography
+
+      - name: Python layers against the host stubs
+        # hoststub reads meshtastic/python/*.py relative to the repo root, so
+        # this has to run from there.
+        run: |
+          python -m compileall -q meshtastic/python
+          python tools/hosttest.py
+
+      - name: Part drivers against a recording native module
+        # hosttest fakes meshradio's contract, so a chip register written at the
+        # wrong moment is invisible to it. This is the layer underneath, and it
+        # is what keeps the receive-length regression from coming back. It skips
+        # any driver whose directory is not in this tree and says so.
+        run: python tools/radiotest.py
+
+  # What goes on the CIRCUITPY drive: the Rust half as the package's __init__,
+  # the Python layers merged beside it. The radio driver is deliberately not
+  # here -- it ships from fede2cr/cpy-lr2021, and a second copy published from
+  # this repository would be a second thing to keep in step.
+  modules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: cpy-meshtastic
+          persist-credentials: false
+
+      - name: Check out the patched CircuitPython
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.circuitpython_repo }}
+          ref: ${{ inputs.circuitpython_ref }}
+          path: circuitpython
+          submodules: false
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Fetch the CircuitPython history and tags
+        # Two fetches, and both are needed. `make fetch-tags` pulls adafruit's
+        # tags and deepens adafruit's own history -- it fetches from adafruit by
+        # URL, so it never brings in this fork's commits. py/version.py then
+        # runs `git describe --first-parent`, which walks *this branch's*
+        # parents, and after a depth-1 checkout of a fork branch those are not
+        # here. Describe hits the shallow boundary, falls back to a bare hash,
+        # and py/makeversionhdr.py rejects it with "Cannot determine version" --
+        # naming the fetch that just ran, which is why the failure misleads.
+        #
+        # Deepening this branch to the same 2023 cutoff the tree uses for tags
+        # is enough, and avoids cloning the whole ~500 MB history.
+        env:
+          REF: ${{ inputs.circuitpython_ref }}
+        run: |
+          git -C circuitpython fetch --shallow-since="2023-02-01" origin "$REF" \
+            || git -C circuitpython fetch --deepen=200 origin "$REF"
+          make -C circuitpython fetch-tags
+          # Checked here rather than left to mpy-cross: makeversionhdr.py splits
+          # this on "." and emits the first three parts as C integer literals,
+          # so a bare hash fails two steps later pointing at the wrong remedy.
+          version=$(git -C circuitpython describe --dirty --tags --always \
+                      --first-parent --match '[!v]*')
+          echo "CircuitPython version: $version"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::git describe gave '$version', not a version: the deepen above did not reach a tag" ; exit 1 ;;
+          esac
+
+      - name: Fetch the huffman submodule
+        # maketranslationdata.py compresses the message table with it, so
+        # mpy-cross does not build without it.
+        run: git -C circuitpython submodule update --init --depth 1 tools/huffman
+
+      # Before the Xtensa toolchains, and that ordering is load-bearing.
+      # mpy-cross is a host binary: gcc compiles py/nlrx64.c and hands the
+      # result to whichever `as` it finds on PATH. The IDF install below
+      # prepends its tools, three of which are <prefix>/<target>/bin
+      # directories holding *unprefixed* binutils, and those cross assemblers
+      # have no `--64`. A step cannot be polluted by a PATH it precedes.
+      - name: Build mpy-cross
+        run: make -C circuitpython/mpy-cross -j"$(nproc)"
+
+      # Upstream rustc has no Xtensa backend, so this is the `esp` fork rather
+      # than a target added to nightly.
+      - name: Install the Xtensa Rust toolchain
+        uses: esp-rs/xtensa-toolchain@v1.7
+        with:
+          default: true
+          buildtargets: esp32s3
+          ldproxy: false
+
+      # The Rust fork brings its own LLVM but no binutils, and the natmod link
+      # needs `ld -r`, `ar` and `objcopy` for the S3 specifically: the generic
+      # xtensa-esp-elf driver has no chip dynconfig and builds big-endian.
+      - name: Install the Xtensa binutils
+        uses: espressif/install-esp-idf-action@v1
+        with:
+          version: v5.3
+          tools: xtensa-esp-elf
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install the Python build dependencies
+        # pyelftools reads the crate's ELF objects; `ar` is how tools/ar_util.py
+        # opens the .a archive. Installed after the IDF step because that step
+        # puts its own venv on PATH, so `pip` and the `python3` the build then
+        # calls have to be the same interpreter.
+        run: pip install pyelftools ar
+
+      - name: Build the modules
+        working-directory: cpy-meshtastic
+        run: make w12 MPY_DIR=../circuitpython PYTHON=python3
+
+      - name: Check the drive layout
+        # Everything of ours is one package directory, and the artifact is
+        # copied to CIRCUITPY as-is. A module that lands anywhere else imports
+        # as nothing, so the shape is worth asserting rather than eyeballing.
+        working-directory: cpy-meshtastic
+        run: |
+          missing=0
+          for f in code.py repl.py settings.toml \
+                   lib/meshtastic/__init__.mpy lib/meshtastic/meshlib.mpy \
+                   lib/meshtastic/meshphone.mpy lib/meshtastic/meshtext.mpy \
+                   lib/meshtastic/meshcache.mpy; do
+            [ -f "dist-w12/$f" ] || { echo "missing dist-w12/$f"; missing=1; }
+          done
+          # __init__ is the Rust half. Without it the directory is a namespace
+          # package: the submodules still import and `meshtastic.decode` does
+          # not, which fails a long way from here.
+          #
+          # And the radio driver must *not* be here: it is released from its own
+          # repository, and one shipped by accident from this one would be a
+          # second copy to keep in step.
+          for f in dist-w12/lib/lr2021.mpy dist-w12/lib/lr1121.mpy; do
+            [ -f "$f" ] && { echo "$f should not be published from here"; missing=1; }
+          done
+          exit $missing
+
+      - name: Name the artifact after the version
+        working-directory: cpy-meshtastic
+        env:
+          VERSION: ${{ inputs.version }}
+        run: mv dist-w12 "meshtastic-${VERSION#v}-xtensawin"
+
+      - name: Record what was built
+        working-directory: cpy-meshtastic
+        env:
+          VERSION: ${{ inputs.version }}
+          CIRCUITPYTHON_REPO: ${{ inputs.circuitpython_repo }}
+          CIRCUITPYTHON_REF: ${{ inputs.circuitpython_ref }}
+        run: |
+          dir="meshtastic-${VERSION#v}-xtensawin"
+          {
+            echo "### modules (xtensawin)"
+            echo ""
+            echo "| file | bytes |"
+            echo "|---|---|"
+            for f in "$dir"/lib/meshtastic/*; do
+              echo "| \`${f#$dir/lib/}\` | $(stat -c%s "$f") |"
+            done
+            echo ""
+            # Byte 1 is the format version the firmware refuses a mismatch on.
+            echo "| | |"
+            echo "|---|---|"
+            echo "| mpy format version | $(od -An -tu1 -j1 -N1 "$dir/lib/meshtastic/meshlib.mpy" | tr -d ' ') |"
+            echo "| CircuitPython | \`$CIRCUITPYTHON_REPO@$CIRCUITPYTHON_REF\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: meshtastic-modules-${{ inputs.version }}-xtensawin
+          path: cpy-meshtastic/meshtastic-*-xtensawin
+          if-no-files-found: error

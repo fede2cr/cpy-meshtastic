@@ -1,0 +1,7 @@
+target/
+build/
+*.mpy
+.mpy_ld_cache/
+__pycache__/
+*.pyc
+Cargo.lock

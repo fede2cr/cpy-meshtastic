@@ -1,0 +1,113 @@
+# Settings for the Base Duo. Copy to the root of CIRCUITPY.
+#
+# Almost nothing is here on purpose. The node's settings live in NVM, because a
+# file on this drive can only be edited by a host and a node has to be able to
+# retune itself; the region is declared at the top of code.py, which writes it
+# to NVM at every boot. Read the lot with settings() and change one for the
+# session with configure():
+#
+#     >>> settings()
+#     >>> configure(region="EU_868", preset="LongSlow")
+#
+# What is left below cannot go anywhere else: CircuitPython reads this file
+# itself before any of our code runs, so a key the supervisor acts on has to be
+# in it. Its TOML subset understands strings, integers, floats, booleans and
+# comments, but it *ignores* [table] headers, which is why the keys are flat and
+# prefixed rather than grouped. Arrays are not supported either.
+
+# ------------------------------------------------------------------- names
+
+# What this node calls itself. Both are commented out on purpose: left unset,
+# the node derives "Meshtastic bde1" and "bde1" from the last four digits of
+# its own number, which is exactly what stock firmware does and means a board
+# straight out of this tree is indistinguishable from one running Meshtastic.
+# These are the equivalent of the firmware's USERPREFS_CONFIG_OWNER_LONG_NAME
+# and _SHORT_NAME build flags: a name baked in before anyone has touched it.
+#
+# A rename from the phone goes to NVM and wins over both, so once the app has
+# set a name these stop having any effect. `configure(long_name=None)` clears
+# the NVM record and hands this file its say back.
+# MESH_LONG_NAME = "Muzi Base Duo"
+# MESH_SHORT_NAME = "MUZI"
+
+# --------------------------------------------------------------- bluetooth
+
+# CircuitPython's own BLE workflow: the file-transfer service, and a REPL over
+# Bluetooth. Read by the supervisor, not by anything here, which is why this one
+# cannot move to NVM with the rest.
+#
+# It is off because the nRF52840 has exactly one advertising set, and this node
+# wants it to advertise itself to the Meshtastic app. Left on, the two are not
+# discoverable at the same time: whichever advertisement `meshble.advertise()`
+# starts wins, and the workflow spends the rest of the session being refused.
+# Turning it off makes that a decision rather than a symptom.
+#
+# The cost is real -- a REPL over BLE is the same prompt this project is built
+# around, without the USB cable. Set it back to true on a board that is being
+# worked on rather than run.
+CIRCUITPY_BLE_WORKFLOW = false
+
+# ------------------------------------------------------------------- heap
+
+# The Python heap's first area, in bytes. Stock is 8 kB.
+#
+# This firmware builds with MICROPY_GC_SPLIT_HEAP_AUTO, so the heap is a chain
+# of areas rather than one block: when an allocation does not fit, the GC asks
+# the outer pool for a new area and links it on. An allocation has to fit
+# contiguously inside *one* area, which is why a node can report eight kilobytes
+# free and still fail to find two -- the eight are spread over several areas and
+# the outer pool has nothing left to cut a new one from.
+#
+# Growth doubles, capped by whatever is contiguous at the time. Starting at 8 kB
+# and growing underneath a SoftDevice that is taking its own bites is how the
+# chain ends up long and every link small. Claiming it here takes it once, at
+# boot, when RAM is as unfragmented as it will ever be.
+#
+# Raising this is not free: it comes out of the same outer pool the SoftDevice,
+# USB and the BLE attribute table draw from, so too large fails somewhere else
+# instead. `_allocate_memory` retries with the build default if the request
+# cannot be met, so a bad number here degrades rather than bricks -- but the
+# failure it degrades into is the one above.
+CIRCUITPY_HEAP_START_SIZE = 49152
+
+# ------------------------------------------------------------- board budget
+
+# What this board has room for, as opposed to what the mesh would like. Read by
+# `mesh_budget` at import; every one of them has a default in the source, and a
+# key left out or commented here gets it.
+#
+# These are the Base Duo's numbers. An nRF52840 has 192 kB of RAM once the
+# SoftDevice has taken its share, and the board runs out in one place every
+# time: the read queue is the largest single block the program ever asks for.
+# A board with more RAM should raise all of these or delete the section; this
+# is the only file that has to change to do it.
+#
+# They were all cut below their defaults while the Rust halves were .mpy files
+# on the drive, costing their own size in heap. Built into the firmware they
+# cost none, which left about 37 kB free where there had been 6 kB, and every
+# one of these is back at its default. Undo that first if this board is ever
+# flashed with a stock image again -- see the note above MESH_QUEUE_BYTES for
+# what happens when the phone cannot get its config dump.
+
+# The message store's arena, in bytes, taken once at boot and never grown.
+# Default 1536. Flash can only keep about 1200 bytes of messages across a
+# reset, so anything much above that is history the next power cycle discards.
+MESH_INBOX_BYTES = 1536
+
+# Peers held in the roster. Default 32, at 24 bytes each in one block. The
+# nodes worth knowing about are the near ones; a walk past a busy town fills
+# the rest with strangers heard once.
+MESH_MAX_NODES = 32
+
+# Bytes of queued FromRadio the phone can have waiting. Default 2048. The whole
+# config dump has to fit at once -- the app reads until a read comes back empty
+# and takes that as the end -- so under about 1200 it never finishes
+# connecting. What is above that is headroom for mesh traffic arriving between
+# reads.
+MESH_QUEUE_BYTES = 2048
+
+# Whether the roster and the messages survive a reset. Default true. Off, the
+# node comes up empty every time and meshcache.mpy need not be on the drive at
+# all; what that buys is the two kilobytes it wants at exactly the moments the
+# BLE queue wants its own.
+MESH_CACHE = true

@@ -1,0 +1,73 @@
+# Attaches the meshtastic modules to a GitHub release on a v* tag.
+#
+# The build lives in build.yml, which ci.yml already runs on every push; this
+# re-runs it with the tag as the artifact version and publishes the result.
+# The tests have to pass and the modules have to build, or nothing is released.
+#
+# One artifact: the xtensawin modules. No UF2 -- the board this repository
+# targets is still a draft upstream, and the radio driver is released from its
+# own repository rather than bundled here.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ github.ref_name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+
+      # A directory of loose files is awkward to attach and awkward to install,
+      # so the drive layout ships as one archive that unzips onto CIRCUITPY.
+      - name: Zip the drive layout
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          dir=$(ls -d assets/meshtastic-*-xtensawin)
+          (cd "$dir" && zip -qr "../../meshtastic-${VERSION#v}-xtensawin.zip" .)
+          ls -l meshtastic-*.zip
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: meshtastic-*-xtensawin.zip
+          generate_release_notes: true
+          body: |
+            Unzip onto the `CIRCUITPY` drive: `code.py`, `repl.py` and
+            `settings.toml` at the root, `lib/meshtastic/` beside them.
+
+            Built for **xtensawin** — the ESP32-S3. A native `.mpy` is machine
+            code, so this will not load on any other CPU.
+
+            **The firmware must be built with `CIRCUITPY_ENABLE_MPY_NATIVE=1`.**
+            Official CircuitPython builds do not set it — at 10.3.1 only five
+            boards across every port do, and none of them are Espressif — so
+            `lib/meshtastic/__init__.mpy` fails to import on a stock image with
+            "native code in .mpy unsupported". That file is the Rust half the
+            rest of the library is built on, so the whole package needs it.
+
+            The radio driver is not in here. Take the `.mpy` for the part your
+            board carries from its own release and copy it into `lib/`:
+
+            | radio | release |
+            |---|---|
+            | LR2021 | [cpy-lr2021](https://github.com/fede2cr/cpy-lr2021/releases) |
+            | LR1121 | [cpy-lr1121](https://github.com/fede2cr/cpy-lr1121/releases) |
+
+            `MESH_RADIO` in `settings.toml` chooses which adapter is used.

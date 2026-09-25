@@ -1,0 +1,12 @@
+[package]
+name = "meshtastic"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Meshtastic frame decoding for a CircuitPython native module"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+# Matches the lr1121 crate: `cargo test` forces panic=unwind, which a no_std
+# staticlib cannot link, and there are no runnable examples.
+doctest = false
