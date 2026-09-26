@@ -1,12 +1,14 @@
-# Attaches the meshtastic modules to a GitHub release on a v* tag.
+# Attaches the modules, the firmware images and the W12 bootloader to a GitHub
+# release on a v* tag.
 #
 # The build lives in build.yml, which ci.yml already runs on every push; this
 # re-runs it with the tag as the artifact version and publishes the result.
 # The tests have to pass and the modules have to build, or nothing is released.
 #
-# One artifact: the xtensawin modules. No UF2 -- the board this repository
-# targets is still a draft upstream, and the radio driver is released from its
-# own repository rather than bundled here.
+# Four kinds of asset: the xtensawin modules as a drive-layout zip, a
+# CircuitPython UF2 per board, and TinyUF2 for the W12, which ships without a
+# UF2 bootloader. The radio driver is released from its own repository rather
+# than bundled here.
 
 name: release
 
@@ -42,13 +44,51 @@ jobs:
         run: |
           dir=$(ls -d assets/meshtastic-*-xtensawin)
           (cd "$dir" && zip -qr "../../meshtastic-${VERSION#v}-xtensawin.zip" .)
-          ls -l meshtastic-*.zip
+          ls -l meshtastic-*.zip assets/*.uf2 assets/*.zip
 
       - uses: softprops/action-gh-release@v3
         with:
-          files: meshtastic-*-xtensawin.zip
+          files: |
+            meshtastic-*-xtensawin.zip
+            assets/circuitpython-*.uf2
+            assets/tinyuf2-*.zip
+            assets/update-tinyuf2-*.uf2
           generate_release_notes: true
           body: |
+            ### Firmware
+
+            | board | image | bootloader |
+            |---|---|---|
+            | Muzi Base Duo | `circuitpython-muzi_base_duo-*.uf2` | ships with one |
+            | Meshnology W12 | `circuitpython-meshnology_w12-*.uf2` | `tinyuf2-meshnology_w12-*.zip`, flash once |
+
+            Both images are CircuitPython from `fede2cr/circuitpython@cpy-rust`
+            with the board added, and `CIRCUITPY_ENABLE_MPY_NATIVE=1` set.
+            They do not carry the pin-interrupt or `_bleio` read-queue patches,
+            so `repl.py` collects packets only when asked (`listen()`,
+            `poll()`), and the Bluetooth phone link does not work. The modules
+            below are xtensawin only, so the Base Duo image has none to run
+            yet.
+
+            **Base Duo:** double-tap reset, drag the `.uf2` onto the drive
+            that appears.
+
+            **W12, the first time:** it has no UF2 bootloader. Hold BOOT, tap
+            reset, release BOOT, and write TinyUF2 over USB:
+
+            ```
+            esptool.py --chip esp32s3 write_flash 0x0 combined.bin
+            ```
+
+            `combined.bin` is in `tinyuf2-meshnology_w12-*.zip`. This erases
+            what was on the board. After that, and for every update: tap
+            reset, and while the LED is lit press BOOT. `W12BOOT` appears;
+            drag the `.uf2` onto it. Double-tap reset does **not** work on this
+            board. `update-tinyuf2-meshnology_w12-*.uf2` updates a TinyUF2
+            that is already installed, dragged onto `W12BOOT`.
+
+            ### Modules
+
             Unzip onto the `CIRCUITPY` drive: `code.py`, `repl.py` and
             `settings.toml` at the root, `lib/meshtastic/` beside them.
 
@@ -56,8 +96,9 @@ jobs:
             code, so this will not load on any other CPU.
 
             **The firmware must be built with `CIRCUITPY_ENABLE_MPY_NATIVE=1`.**
-            Official CircuitPython builds do not set it — at 10.3.1 only five
-            boards across every port do, and none of them are Espressif — so
+            The images above are. Official CircuitPython builds do not set
+            it — at 10.3.1 only five boards across every port do, and none of
+            them are Espressif — so
             `lib/meshtastic/__init__.mpy` fails to import on a stock image with
             "native code in .mpy unsupported". That file is the Rust half the
             rest of the library is built on, so the whole package needs it.

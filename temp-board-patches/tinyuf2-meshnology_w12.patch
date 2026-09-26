@@ -1,0 +1,142 @@
+From 2b2d01a02d1ae8f87a5faced83de6d0e2aa824cc Mon Sep 17 00:00:00 2001
+From: Alvaro Figueroa <alvarof@microsoft.com>
+Date: Fri, 25 Sep 2026 18:38:31 -0600
+Subject: [PATCH] espressif: add Meshnology W12
+
+ESP32-S3R8 with 16 MB flash and 8 MB octal PSRAM, Heltec V3-style
+pinout. The board ships with no UF2 bootloader.
+
+partitions-16MB.csv matches CircuitPython's own 16 MB layout offset for
+offset (ota_0 0x10000, ota_1 0x210000, uf2 0x410000, FAT 0x450000), so
+a CircuitPython image for this board drops onto W12BOOT as-is.
+
+UF2 entry is BOOT (GPIO0) pressed while the RGB LED on GPIO46 is lit
+after reset: no RC network is fitted on a free GPIO, so there is no
+double-reset detection. Holding BOOT through reset reaches the ROM
+bootloader instead.
+
+USB PID 0xFED2 under Espressif's VID, the same pair the CircuitPython
+firmware for this board uses.
+
+Carried by cpy-meshtastic in temp-board-patches/ until it is upstream.
+---
+ .../boards/meshnology_w12/board.cmake         |  2 +
+ ports/espressif/boards/meshnology_w12/board.h | 80 +++++++++++++++++++
+ .../espressif/boards/meshnology_w12/sdkconfig | 12 +++
+ 3 files changed, 94 insertions(+)
+ create mode 100644 ports/espressif/boards/meshnology_w12/board.cmake
+ create mode 100644 ports/espressif/boards/meshnology_w12/board.h
+ create mode 100644 ports/espressif/boards/meshnology_w12/sdkconfig
+
+diff --git a/ports/espressif/boards/meshnology_w12/board.cmake b/ports/espressif/boards/meshnology_w12/board.cmake
+new file mode 100644
+index 0000000..9bac46d
+--- /dev/null
++++ b/ports/espressif/boards/meshnology_w12/board.cmake
+@@ -0,0 +1,2 @@
++# Apply board specific content here
++set(IDF_TARGET "esp32s3")
+diff --git a/ports/espressif/boards/meshnology_w12/board.h b/ports/espressif/boards/meshnology_w12/board.h
+new file mode 100644
+index 0000000..822a3b9
+--- /dev/null
++++ b/ports/espressif/boards/meshnology_w12/board.h
+@@ -0,0 +1,80 @@
++/*
++ * The MIT License (MIT)
++ *
++ * Copyright (c) 2020 Ha Thach (tinyusb.org) for Adafruit Industries
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++ * copies of the Software, and to permit persons to whom the Software is
++ * furnished to do so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in
++ * all copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++ * THE SOFTWARE.
++ */
++
++/* Meshnology W12 "WiFi LoRa 32 V5": ESP32-S3R8, 16 MB flash, 8 MB octal PSRAM.
++ * Heltec V3-style pinout. PSRAM is deliberately not configured -- no board in
++ * this port configures it, the bootloader never allocates from it, and leaving
++ * it alone keeps the octal pins untouched until the application claims them.
++ */
++
++#ifndef MESHNOLOGY_W12_H_
++#define MESHNOLOGY_W12_H_
++
++//--------------------------------------------------------------------+
++// Button
++//--------------------------------------------------------------------+
++
++// BOOT doubles as the user button. Holding it from reset reaches the ROM
++// bootloader instead, so UF2 mode is: reset, wait for the indicator, then press.
++#define PIN_BUTTON_UF2          0
++
++// No RC network is fitted on any free pin, so PIN_DOUBLE_RESET_RC stays
++// undefined and double-tap reset cannot enter UF2 on this board.
++#define UF2_DETECTION_DELAY_MS  1000
++
++//--------------------------------------------------------------------+
++// LED
++//--------------------------------------------------------------------+
++
++// The RGB LED the vendor variant leaves disabled. It is not behind
++// VEXT_ENABLE (GPIO45), which gates only the OLED and the LR2021 front end.
++#define NEOPIXEL_PIN            46
++
++// Brightness percentage from 1 to 255
++#define NEOPIXEL_BRIGHTNESS     0x10
++
++// Number of neopixels
++#define NEOPIXEL_NUMBER         1
++
++//--------------------------------------------------------------------+
++// USB UF2
++//--------------------------------------------------------------------+
++
++#define USB_VID                 0x303A
++
++// Espressif's third-party VID with this project's own PID, the same pair the
++// CircuitPython firmware for this board uses.
++#define USB_PID                 0xFED2
++
++#define USB_MANUFACTURER        "Meshnology"
++#define USB_PRODUCT             "W12"
++
++#define UF2_PRODUCT_NAME        USB_MANUFACTURER " " USB_PRODUCT
++#define UF2_BOARD_ID            "ESP32S3-W12-v0.2"
++#define UF2_VOLUME_LABEL        "W12BOOT"
++
++// The board has no vendor product page; this points at what the drive is for.
++#define UF2_INDEX_URL           "https://circuitpython.org"
++
++#endif
+diff --git a/ports/espressif/boards/meshnology_w12/sdkconfig b/ports/espressif/boards/meshnology_w12/sdkconfig
+new file mode 100644
+index 0000000..52ecbe8
+--- /dev/null
++++ b/ports/espressif/boards/meshnology_w12/sdkconfig
+@@ -0,0 +1,12 @@
++# Board Specific Config
++
++# Partition Table
++# partitions-16MB.csv matches CircuitPython's own esp-idf-config/partitions-16MB.csv
++# offset for offset -- ota_0 0x10000, ota_1 0x210000, uf2 0x410000, FAT 0x450000.
++# The FAT partition is named ffat here and user_fs there, which is harmless:
++# CircuitPython finds it with esp_partition_find_first(..., SUBTYPE_DATA_FAT, NULL)
++# and passes NULL for the label.
++CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-16MB.csv"
++
++# Serial flasher config
++CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y

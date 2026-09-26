@@ -1,17 +1,20 @@
-# Builds the meshtastic modules for the ESP32-S3 and runs the tests.
+# Builds the meshtastic modules for the ESP32-S3, a CircuitPython image for
+# each board, TinyUF2 for the W12, and runs the tests.
 #
 # No trigger of its own: ci.yml calls it on a push and release.yml calls it on
 # a tag, so what ships is built the way CI already proved the branch builds.
 #
-# One architecture. A natmod carries machine code, so the Rust half is per
-# instruction set, and `xtensawin` is the one the ESP32-S3 runs. The Thumb
-# build the nRF52840 needs is not published here yet: its board is still a
-# draft upstream, and there is no point shipping modules for an image nobody
-# can build. `make` (not `make w12`) is the target that produces it when that
-# changes.
+# One module architecture. A natmod carries machine code, so the Rust half is
+# per instruction set, and `xtensawin` is the one the ESP32-S3 runs. The Thumb
+# build the nRF52840 needs is not published here yet. `make` (not `make w12`)
+# is the target that produces it when that changes.
 #
-# No firmware image either. The modules are what this repository releases; the
-# radio driver ships from its own repository, and a UF2 would need the board.
+# The images are the fork's tree plus one board. Neither board is in
+# fede2cr/circuitpython@cpy-rust, so each is carried here as a patch in
+# temp-board-patches/ and applied before the build -- and skipped, with a
+# notice, once the fork has the board itself, which is the signal to delete
+# the patch. The W12 ships with no UF2 bootloader at all, so TinyUF2 is built
+# for it the same way, from its own patch against adafruit/tinyuf2.
 #
 # THIS WILL NOT BUILD AGAINST STOCK CIRCUITPYTHON. The Rust half is a native
 # module, and stock `tools/mpy_ld.py` rejects the relocations rustc emits for
@@ -34,6 +37,17 @@ on:
         description: Ref within that fork
         type: string
         default: cpy-rust
+      tinyuf2_repo:
+        description: TinyUF2 repository the W12 bootloader is built from
+        type: string
+        default: adafruit/tinyuf2
+      tinyuf2_ref:
+        description: Ref within that repository
+        type: string
+        # Pinned rather than master: the bootloader is flashed once and then
+        # lives on the board, so it should only change when someone means it
+        # to. This is the commit the W12 board was brought up on.
+        default: 6ca7559832df25513351f8fa2f43a8605c723dd5
       version:
         description: Version stamped into the artifact names
         type: string
@@ -243,4 +257,250 @@ jobs:
         with:
           name: meshtastic-modules-${{ inputs.version }}-xtensawin
           path: cpy-meshtastic/meshtastic-*-xtensawin
+          if-no-files-found: error
+
+  # A CircuitPython image per board: the fork above plus the board definition
+  # from temp-board-patches/. Nothing of this repository's is built into it --
+  # the library stays on the drive, where the modules job puts it -- so what
+  # makes these images ours is only that the boards exist and that
+  # CIRCUITPY_ENABLE_MPY_NATIVE is on, which their mpconfigboard.mk sets.
+  firmware:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - board: muzi_base_duo
+            port: nordic
+          - board: meshnology_w12
+            port: espressif
+    env:
+      BOARD: ${{ matrix.board }}
+      PORT: ${{ matrix.port }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: cpy-meshtastic
+          persist-credentials: false
+
+      - name: Check out the patched CircuitPython
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.circuitpython_repo }}
+          ref: ${{ inputs.circuitpython_ref }}
+          path: circuitpython
+          submodules: false
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Fetch the CircuitPython history and tags
+        # The same two fetches as the modules job, for the same reason: the
+        # image's version string comes from `git describe --first-parent`,
+        # and a bare hash fails the build in py/makeversionhdr.py.
+        env:
+          REF: ${{ inputs.circuitpython_ref }}
+        run: |
+          git -C circuitpython fetch --shallow-since="2023-02-01" origin "$REF" \
+            || git -C circuitpython fetch --deepen=200 origin "$REF"
+          make -C circuitpython fetch-tags
+
+      - name: Add the board
+        # Committed rather than applied to the work tree, so the version the
+        # image reports is not stamped -dirty. Skipped once the fork carries
+        # the board itself: from then on the fork's copy is the one to build,
+        # and the patch here is dead weight to delete.
+        env:
+          REPO: ${{ inputs.circuitpython_repo }}
+          REF: ${{ inputs.circuitpython_ref }}
+        run: |
+          patch="$GITHUB_WORKSPACE/cpy-meshtastic/temp-board-patches/circuitpython-$BOARD.patch"
+          if [ -d "circuitpython/ports/$PORT/boards/$BOARD" ]; then
+            echo "::notice::$REPO@$REF already has $BOARD; temp-board-patches/circuitpython-$BOARD.patch is no longer used and can be deleted"
+          else
+            git -C circuitpython -c user.name="cpy-meshtastic CI" \
+              -c user.email="ci@invalid" am "$patch"
+          fi
+          version=$(git -C circuitpython describe --dirty --tags --always \
+                      --first-parent --match '[!v]*')
+          echo "CircuitPython version: $version"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::git describe gave '$version', not a version: the deepen above did not reach a tag" ; exit 1 ;;
+          esac
+          echo "CP_VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Fetch the submodules the board needs
+        # ci_fetch_deps.py is what CircuitPython's own CI uses, and knows
+        # which of the tree's ~80 submodules each port reads. For espressif it
+        # clones the IDF but not the IDF's own submodules, hence the second
+        # line.
+        working-directory: circuitpython
+        run: |
+          python3 tools/ci_fetch_deps.py "$BOARD"
+          if [ "$PORT" = espressif ]; then
+            git submodule update --init --depth=1 --recursive ports/espressif/esp-idf
+          fi
+
+      - name: Install the Arm toolchain
+        if: matrix.port == 'nordic'
+        # The release CircuitPython's own CI pins, so the image is built the
+        # way a stock one for any other nRF52840 board is.
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: "15.2.Rel1"
+
+      - name: Locate the IDF
+        if: matrix.port == 'espressif'
+        run: |
+          echo "IDF_PATH=$GITHUB_WORKSPACE/circuitpython/ports/espressif/esp-idf" >> "$GITHUB_ENV"
+          echo "IDF_TOOLS_PATH=$GITHUB_WORKSPACE/.idf_tools" >> "$GITHUB_ENV"
+          echo "ESP_ROM_ELF_DIR=$GITHUB_WORKSPACE/.idf_tools" >> "$GITHUB_ENV"
+          echo "IDF_COMMIT=$(git -C circuitpython rev-parse HEAD:ports/espressif/esp-idf)" >> "$GITHUB_ENV"
+
+      - name: Cache the IDF tools
+        if: matrix.port == 'espressif'
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.IDF_TOOLS_PATH }}
+          key: ${{ runner.os }}-${{ env.pythonLocation }}-idf-tools-${{ env.IDF_COMMIT }}
+
+      - name: Install the IDF tools
+        # The IDF the tree pins, not the Xtensa toolchain the modules job
+        # installs: CircuitPython builds against its own fork of the IDF, and
+        # a different release of it would not configure.
+        if: matrix.port == 'espressif'
+        run: |
+          "$IDF_PATH/install.sh" esp32s3
+          "$IDF_PATH/tools/idf_tools.py" install ninja
+          rm -rf "$IDF_TOOLS_PATH/dist"
+          source "$IDF_PATH/export.sh"
+          echo "IDF_PYTHON_ENV_PATH=$IDF_PYTHON_ENV_PATH" >> "$GITHUB_ENV"
+          echo "$PATH" >> "$GITHUB_PATH"
+          python3 -u circuitpython/tools/ci_set_idf_constraint.py
+
+      - name: Install the Python build dependencies
+        # On espressif this is the IDF's own venv, now first on PATH, and the
+        # constraints file keeps pip from upgrading anything the IDF pins.
+        working-directory: circuitpython
+        run: |
+          if [ -n "${IDF_CONSTRAINT_FILE:-}" ] && [ -f "$IDF_CONSTRAINT_FILE" ]; then
+            pip install -c "$IDF_CONSTRAINT_FILE" -r requirements-dev.txt
+          else
+            pip install -r requirements-dev.txt
+          fi
+
+      - name: Build the image
+        working-directory: circuitpython/ports/${{ matrix.port }}
+        run: make -j"$(nproc)" BOARD="$BOARD"
+
+      - name: Name the image after the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          cp "circuitpython/ports/$PORT/build-$BOARD/firmware.uf2" \
+             "circuitpython-$BOARD-${VERSION#v}.uf2"
+
+      - name: Record what was built
+        env:
+          VERSION: ${{ inputs.version }}
+          CIRCUITPYTHON_REPO: ${{ inputs.circuitpython_repo }}
+          CIRCUITPYTHON_REF: ${{ inputs.circuitpython_ref }}
+        run: |
+          f="circuitpython-$BOARD-${VERSION#v}.uf2"
+          {
+            echo "### firmware ($BOARD)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| file | \`$f\` |"
+            echo "| bytes | $(stat -c%s "$f") |"
+            echo "| CircuitPython | \`$CP_VERSION\` from \`$CIRCUITPYTHON_REPO@$CIRCUITPYTHON_REF\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ matrix.board }}-${{ inputs.version }}
+          path: circuitpython-${{ matrix.board }}-*.uf2
+          if-no-files-found: error
+
+  # The W12 is sold with no UF2 bootloader, so the image above has nothing to
+  # be dropped onto until this is flashed once over USB with esptool. Built the
+  # way TinyUF2's own CI builds every Espressif board -- in the IDF release
+  # container it is tested against -- from the board patch in
+  # temp-board-patches/.
+  tinyuf2:
+    runs-on: ubuntu-latest
+    env:
+      BOARD: meshnology_w12
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: cpy-meshtastic
+          persist-credentials: false
+
+      - name: Check out TinyUF2
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.tinyuf2_repo }}
+          ref: ${{ inputs.tinyuf2_ref }}
+          path: tinyuf2
+          # Whole history and tags: the bootloader reports `git describe` as
+          # its version in INFO_UF2.TXT, and a bare hash says less.
+          fetch-depth: 0
+          submodules: true
+          persist-credentials: false
+
+      - name: Add the board
+        env:
+          REPO: ${{ inputs.tinyuf2_repo }}
+          REF: ${{ inputs.tinyuf2_ref }}
+        run: |
+          patch="$GITHUB_WORKSPACE/cpy-meshtastic/temp-board-patches/tinyuf2-$BOARD.patch"
+          if [ -d "tinyuf2/ports/espressif/boards/$BOARD" ]; then
+            echo "::notice::$REPO@$REF already has $BOARD; temp-board-patches/tinyuf2-$BOARD.patch is no longer used and can be deleted"
+          else
+            git -C tinyuf2 -c user.name="cpy-meshtastic CI" \
+              -c user.email="ci@invalid" am "$patch"
+          fi
+
+      - name: Fetch the board's dependencies
+        working-directory: tinyuf2
+        run: python3 tools/get_deps.py --board "$BOARD"
+
+      - name: Build
+        working-directory: tinyuf2
+        run: |
+          docker run --rm -v "$PWD:/project" -w /project espressif/idf:v5.3.2 \
+            /bin/bash -c "git config --global --add safe.directory '*' && idf.py -C ports/espressif -DBOARD=$BOARD build"
+
+      - name: Package
+        # The same two assets TinyUF2 publishes for every board it releases:
+        # everything esptool needs in one zip, flat, and the self-updater on
+        # its own for a board that already runs an older TinyUF2.
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          bin="tinyuf2/ports/espressif/_bin/$BOARD"
+          zip -jr "tinyuf2-$BOARD-${VERSION#v}.zip" "$bin"
+          cp "$bin/apps/update-tinyuf2.uf2" "update-tinyuf2-$BOARD-${VERSION#v}.uf2"
+          {
+            echo "### tinyuf2 ($BOARD)"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| TinyUF2 | \`$(git -C tinyuf2 describe --dirty --always --tags)\` |"
+            echo "| flash_args | \`$(head -1 "$bin/flash_args")\` |"
+            echo "| combined.bin | $(stat -c%s "$bin/combined.bin") bytes, written at 0x0 |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tinyuf2-meshnology_w12-${{ inputs.version }}
+          path: |
+            tinyuf2-meshnology_w12-*.zip
+            update-tinyuf2-meshnology_w12-*.uf2
           if-no-files-found: error

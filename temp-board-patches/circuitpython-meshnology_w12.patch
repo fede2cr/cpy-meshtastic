@@ -1,0 +1,233 @@
+From 4f507b1804f1660468a34df67fd5475f1be1ff63 Mon Sep 17 00:00:00 2001
+From: Alvaro Figueroa <alvarof@microsoft.com>
+Date: Fri, 25 Sep 2026 18:38:31 -0600
+Subject: [PATCH] espressif: add Meshnology W12
+
+ESP32-S3R8 (8 MB octal PSRAM) with 16 MB flash, a Semtech LR2021
+dual-band LoRa radio, an SSD1315 OLED behind VEXT_ENABLE and an L76K
+GNSS. Heltec V3-style pinout, taken from meshtastic/firmware
+variants/esp32s3/meshnology-w12.
+
+Enables CIRCUITPY_ENABLE_MPY_NATIVE: the LR2021 driver and the
+meshtastic codec ship as native .mpy files and the loader rejects them
+without it.
+
+USB PID 0xFED2 under Espressif's VID. The board ships without a UF2
+bootloader; cpy-meshtastic builds TinyUF2 for it, which enumerates with
+the same VID/PID and uses the same 16 MB partition layout as this
+port's partitions-16MB.csv.
+
+Carried by cpy-meshtastic in temp-board-patches/ until the board is in
+the tree it builds against.
+---
+ ports/espressif/boards/meshnology_w12/board.c |  12 +++
+ .../boards/meshnology_w12/mpconfigboard.h     |  24 +++++
+ .../boards/meshnology_w12/mpconfigboard.mk    |  25 +++++
+ ports/espressif/boards/meshnology_w12/pins.c  | 102 ++++++++++++++++++
+ .../espressif/boards/meshnology_w12/sdkconfig |   6 ++
+ 5 files changed, 169 insertions(+)
+ create mode 100644 ports/espressif/boards/meshnology_w12/board.c
+ create mode 100644 ports/espressif/boards/meshnology_w12/mpconfigboard.h
+ create mode 100644 ports/espressif/boards/meshnology_w12/mpconfigboard.mk
+ create mode 100644 ports/espressif/boards/meshnology_w12/pins.c
+ create mode 100644 ports/espressif/boards/meshnology_w12/sdkconfig
+
+diff --git a/ports/espressif/boards/meshnology_w12/board.c b/ports/espressif/boards/meshnology_w12/board.c
+new file mode 100644
+index 0000000000..0a6cc95332
+--- /dev/null
++++ b/ports/espressif/boards/meshnology_w12/board.c
+@@ -0,0 +1,12 @@
++// This file is part of the CircuitPython project: https://circuitpython.org
++//
++// SPDX-FileCopyrightText: Copyright (c) 2020 Scott Shawcroft for Adafruit Industries
++//
++// SPDX-License-Identifier: MIT
++
++#include "supervisor/board.h"
++
++// No board_init(): unlike the Heltec V3 this does NOT bring up the OLED at
++// boot, because doing so would drive VEXT_ENABLE and it is not yet established
++// whether the radio shares that rail. Leaving the pin alone keeps that
++// measurable from Python. Use the MP_WEAK supervisor/shared/board.c routines.
+diff --git a/ports/espressif/boards/meshnology_w12/mpconfigboard.h b/ports/espressif/boards/meshnology_w12/mpconfigboard.h
+new file mode 100644
+index 0000000000..6d5aa41acd
+--- /dev/null
++++ b/ports/espressif/boards/meshnology_w12/mpconfigboard.h
+@@ -0,0 +1,24 @@
++// This file is part of the CircuitPython project: https://circuitpython.org
++//
++// SPDX-FileCopyrightText: Copyright (c) 2019 Scott Shawcroft for Adafruit Industries
++//
++// SPDX-License-Identifier: MIT
++
++#pragma once
++
++#define MICROPY_HW_BOARD_NAME       "Meshnology W12"
++#define MICROPY_HW_MCU_NAME         "ESP32S3"
++
++#define MICROPY_HW_NEOPIXEL         (&pin_GPIO46)
++
++// SSD1315 OLED at 0x3C shares this bus. Its rail is off until VEXT_ENABLE is
++// driven low, so scanning the bus before then finds nothing.
++#define CIRCUITPY_BOARD_I2C         (1)
++#define CIRCUITPY_BOARD_I2C_PIN     {{.scl = &pin_GPIO18, .sda = &pin_GPIO17}}
++
++// The LR2021 is the only SPI peripheral, so it is the default bus.
++#define CIRCUITPY_BOARD_SPI         (1)
++#define CIRCUITPY_BOARD_SPI_PIN     {{.clock = &pin_GPIO9, .mosi = &pin_GPIO10, .miso = &pin_GPIO11}}
++
++#define DEFAULT_UART_BUS_RX         (&pin_GPIO44)
++#define DEFAULT_UART_BUS_TX         (&pin_GPIO43)
+diff --git a/ports/espressif/boards/meshnology_w12/mpconfigboard.mk b/ports/espressif/boards/meshnology_w12/mpconfigboard.mk
+new file mode 100644
+index 0000000000..291a989dbb
+--- /dev/null
++++ b/ports/espressif/boards/meshnology_w12/mpconfigboard.mk
+@@ -0,0 +1,25 @@
++# Meshnology W12 "WiFi LoRa 32 V5"
++# ESP32-S3R8 (8 MB octal PSRAM) + 16 MB flash + Semtech LR2021 dual-band LoRa.
++# Pin assignment follows the Heltec V3 family; pinout facts come from
++# meshtastic/firmware branch `develop`, variants/esp32s3/meshnology-w12.
++
++# Espressif's third-party VID with this project's own PID. TinyUF2 on this
++# board enumerates with the same pair.
++USB_VID = 0x303A
++USB_PID = 0xFED2
++USB_PRODUCT = "W12"
++USB_MANUFACTURER = "Meshnology"
++
++IDF_TARGET = esp32s3
++
++CIRCUITPY_ESP_FLASH_SIZE = 16MB
++CIRCUITPY_ESP_FLASH_MODE = qio
++CIRCUITPY_ESP_FLASH_FREQ = 80m
++
++CIRCUITPY_ESP_PSRAM_SIZE = 8MB
++CIRCUITPY_ESP_PSRAM_MODE = opi
++CIRCUITPY_ESP_PSRAM_FREQ = 80m
++
++# The LR2021 driver for this board ships as a native .mpy, which the loader
++# rejects without this. It is the whole reason this board definition exists.
++CIRCUITPY_ENABLE_MPY_NATIVE = 1
+diff --git a/ports/espressif/boards/meshnology_w12/pins.c b/ports/espressif/boards/meshnology_w12/pins.c
+new file mode 100644
+index 0000000000..5d1baf5438
+--- /dev/null
++++ b/ports/espressif/boards/meshnology_w12/pins.c
+@@ -0,0 +1,102 @@
++// This file is part of the CircuitPython project: https://circuitpython.org
++//
++// SPDX-FileCopyrightText: Copyright (c) 2020 Scott Shawcroft for Adafruit Industries
++//
++// SPDX-License-Identifier: MIT
++
++#include "shared-bindings/board/__init__.h"
++
++// GPIO19/20 are the native USB pins and GPIO33-37 are consumed by the octal
++// PSRAM, so neither range is exposed.
++
++static const mp_rom_map_elem_t board_module_globals_table[] = {
++    CIRCUITPYTHON_BOARD_DICT_STANDARD_ITEMS
++
++    // LR2021 dual-band LoRa
++    { MP_ROM_QSTR(MP_QSTR_LORA_CS), MP_ROM_PTR(&pin_GPIO8) },
++    { MP_ROM_QSTR(MP_QSTR_LORA_SCK), MP_ROM_PTR(&pin_GPIO9) },
++    { MP_ROM_QSTR(MP_QSTR_LORA_MOSI), MP_ROM_PTR(&pin_GPIO10) },
++    { MP_ROM_QSTR(MP_QSTR_LORA_MISO), MP_ROM_PTR(&pin_GPIO11) },
++    { MP_ROM_QSTR(MP_QSTR_LORA_RESET), MP_ROM_PTR(&pin_GPIO12) },
++    { MP_ROM_QSTR(MP_QSTR_LORA_BUSY), MP_ROM_PTR(&pin_GPIO13) },
++    // Radio DIO8. DIO5/DIO6 drive the 2.4 GHz PA's TXEN/RXEN and DIO9/10/11
++    // the sub-GHz PA's CTX/CPS/CSD, so neither reaches the MCU.
++    { MP_ROM_QSTR(MP_QSTR_LORA_DIO1), MP_ROM_PTR(&pin_GPIO14) },
++    // Radio DIO7, a second IRQ line nothing currently uses.
++    { MP_ROM_QSTR(MP_QSTR_LORA_DIO7), MP_ROM_PTR(&pin_GPIO7) },
++
++    // PA supply enables, active high. Schematic sheet 3: GPIO3 gates U10, the
++    // 3.3 V LDO feeding the 2.4 GHz PA, and GPIO4 gates U13, the buck feeding
++    // the sub-GHz PA. Their pull-ups (R38, R56) are marked NC, so both rails
++    // stay off until something drives these.
++    { MP_ROM_QSTR(MP_QSTR_PA_EN_2G4), MP_ROM_PTR(&pin_GPIO3) },
++    { MP_ROM_QSTR(MP_QSTR_PA_EN_SUBGHZ), MP_ROM_PTR(&pin_GPIO4) },
++
++    // Peripheral rail, ACTIVE LOW. Powers the OLED; whether the radio shares it
++    // is unverified, so nothing drives this pin automatically.
++    { MP_ROM_QSTR(MP_QSTR_VEXT_ENABLE), MP_ROM_PTR(&pin_GPIO45) },
++
++    { MP_ROM_QSTR(MP_QSTR_BUTTON), MP_ROM_PTR(&pin_GPIO0) },
++    { MP_ROM_QSTR(MP_QSTR_BOOT0), MP_ROM_PTR(&pin_GPIO0) },
++    { MP_ROM_QSTR(MP_QSTR_NEOPIXEL), MP_ROM_PTR(&pin_GPIO46) },
++
++    // Battery divider (390K/100K). ADC_CTRL gates it and is active HIGH;
++    // undriven, BATTERY reads a hard 0 mV rather than a floating value.
++    { MP_ROM_QSTR(MP_QSTR_BATTERY), MP_ROM_PTR(&pin_GPIO1) },
++    { MP_ROM_QSTR(MP_QSTR_ADC_IN), MP_ROM_PTR(&pin_GPIO1) },
++    { MP_ROM_QSTR(MP_QSTR_ADC_CTRL), MP_ROM_PTR(&pin_GPIO2) },
++
++    // SSD1315 OLED at 0x3C
++    { MP_ROM_QSTR(MP_QSTR_SDA), MP_ROM_PTR(&pin_GPIO17) },
++    { MP_ROM_QSTR(MP_QSTR_SCL), MP_ROM_PTR(&pin_GPIO18) },
++
++    { MP_ROM_QSTR(MP_QSTR_TX), MP_ROM_PTR(&pin_GPIO43) },
++    { MP_ROM_QSTR(MP_QSTR_RX), MP_ROM_PTR(&pin_GPIO44) },
++
++    // L76K GNSS. The vendor's variant.h calls this header unpopulated; it is
++    // fitted here, answering NMEA at 9600 with GPS_ENABLE driven low.
++    { MP_ROM_QSTR(MP_QSTR_GPS_TX), MP_ROM_PTR(&pin_GPIO38) },
++    { MP_ROM_QSTR(MP_QSTR_GPS_RX), MP_ROM_PTR(&pin_GPIO39) },
++    { MP_ROM_QSTR(MP_QSTR_GPS_WAKE), MP_ROM_PTR(&pin_GPIO40) },
++    { MP_ROM_QSTR(MP_QSTR_GPS_PPS), MP_ROM_PTR(&pin_GPIO41) },
++    { MP_ROM_QSTR(MP_QSTR_GPS_RESET), MP_ROM_PTR(&pin_GPIO42) },
++    { MP_ROM_QSTR(MP_QSTR_GPS_ENABLE), MP_ROM_PTR(&pin_GPIO48) },
++
++    { MP_ROM_QSTR(MP_QSTR_IO0), MP_ROM_PTR(&pin_GPIO0) },
++    { MP_ROM_QSTR(MP_QSTR_IO1), MP_ROM_PTR(&pin_GPIO1) },
++    { MP_ROM_QSTR(MP_QSTR_IO2), MP_ROM_PTR(&pin_GPIO2) },
++    { MP_ROM_QSTR(MP_QSTR_IO3), MP_ROM_PTR(&pin_GPIO3) },
++    { MP_ROM_QSTR(MP_QSTR_IO4), MP_ROM_PTR(&pin_GPIO4) },
++    { MP_ROM_QSTR(MP_QSTR_IO5), MP_ROM_PTR(&pin_GPIO5) },
++    { MP_ROM_QSTR(MP_QSTR_IO6), MP_ROM_PTR(&pin_GPIO6) },
++    { MP_ROM_QSTR(MP_QSTR_IO7), MP_ROM_PTR(&pin_GPIO7) },
++    { MP_ROM_QSTR(MP_QSTR_IO8), MP_ROM_PTR(&pin_GPIO8) },
++    { MP_ROM_QSTR(MP_QSTR_IO9), MP_ROM_PTR(&pin_GPIO9) },
++    { MP_ROM_QSTR(MP_QSTR_IO10), MP_ROM_PTR(&pin_GPIO10) },
++    { MP_ROM_QSTR(MP_QSTR_IO11), MP_ROM_PTR(&pin_GPIO11) },
++    { MP_ROM_QSTR(MP_QSTR_IO12), MP_ROM_PTR(&pin_GPIO12) },
++    { MP_ROM_QSTR(MP_QSTR_IO13), MP_ROM_PTR(&pin_GPIO13) },
++    { MP_ROM_QSTR(MP_QSTR_IO14), MP_ROM_PTR(&pin_GPIO14) },
++    { MP_ROM_QSTR(MP_QSTR_IO15), MP_ROM_PTR(&pin_GPIO15) },
++    { MP_ROM_QSTR(MP_QSTR_IO16), MP_ROM_PTR(&pin_GPIO16) },
++    { MP_ROM_QSTR(MP_QSTR_IO17), MP_ROM_PTR(&pin_GPIO17) },
++    { MP_ROM_QSTR(MP_QSTR_IO18), MP_ROM_PTR(&pin_GPIO18) },
++    { MP_ROM_QSTR(MP_QSTR_IO21), MP_ROM_PTR(&pin_GPIO21) },
++    { MP_ROM_QSTR(MP_QSTR_IO38), MP_ROM_PTR(&pin_GPIO38) },
++    { MP_ROM_QSTR(MP_QSTR_IO39), MP_ROM_PTR(&pin_GPIO39) },
++    { MP_ROM_QSTR(MP_QSTR_IO40), MP_ROM_PTR(&pin_GPIO40) },
++    { MP_ROM_QSTR(MP_QSTR_IO41), MP_ROM_PTR(&pin_GPIO41) },
++    { MP_ROM_QSTR(MP_QSTR_IO42), MP_ROM_PTR(&pin_GPIO42) },
++    { MP_ROM_QSTR(MP_QSTR_IO43), MP_ROM_PTR(&pin_GPIO43) },
++    { MP_ROM_QSTR(MP_QSTR_IO44), MP_ROM_PTR(&pin_GPIO44) },
++    { MP_ROM_QSTR(MP_QSTR_IO45), MP_ROM_PTR(&pin_GPIO45) },
++    { MP_ROM_QSTR(MP_QSTR_IO46), MP_ROM_PTR(&pin_GPIO46) },
++    { MP_ROM_QSTR(MP_QSTR_IO47), MP_ROM_PTR(&pin_GPIO47) },
++    { MP_ROM_QSTR(MP_QSTR_IO48), MP_ROM_PTR(&pin_GPIO48) },
++
++    { MP_ROM_QSTR(MP_QSTR_I2C), MP_ROM_PTR(&board_i2c_obj) },
++    { MP_ROM_QSTR(MP_QSTR_SPI), MP_ROM_PTR(&board_spi_obj) },
++    { MP_ROM_QSTR(MP_QSTR_UART), MP_ROM_PTR(&board_uart_obj) },
++};
++
++MP_DEFINE_CONST_DICT(board_module_globals, board_module_globals_table);
+diff --git a/ports/espressif/boards/meshnology_w12/sdkconfig b/ports/espressif/boards/meshnology_w12/sdkconfig
+new file mode 100644
+index 0000000000..b9e570161f
+--- /dev/null
++++ b/ports/espressif/boards/meshnology_w12/sdkconfig
+@@ -0,0 +1,6 @@
++#
++# Espressif IoT Development Framework Configuration
++#
++# Board-specific overrides only; the port composes this last, after the
++# flash/PSRAM/native-module fragments selected by mpconfigboard.mk.
++#

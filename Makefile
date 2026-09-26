@@ -191,6 +191,11 @@ $(MPY_CROSS):
 #:
 #: A built-in shadows the drive: `import meshtastic` finds this and never looks
 #: in lib/. Whatever the drive is carrying under that name becomes dead weight.
+#:
+#: The board has to be in the tree. fede2cr/circuitpython@cpy-rust does not
+#: have either of ours yet; temp-board-patches/ carries both, and
+#:   git -C $(MPY_DIR) am $(CURDIR)/temp-board-patches/circuitpython-$(BOARD).patch
+#: adds one. CI applies the same patches to build the released images.
 BOARD ?= muzi_base_duo
 PORT_DIR ?= $(MPY_DIR)/ports/nordic
 #: The CircuitPython tree builds with its own venv, which has cascadetoml.
