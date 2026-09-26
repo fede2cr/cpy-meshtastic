@@ -1,0 +1,75 @@
+From 2995b02b3d03007ca16f7a7a1eeeb8a6247bd50e Mon Sep 17 00:00:00 2001
+From: Alvaro Figueroa <alvarof@microsoft.com>
+Date: Fri, 25 Sep 2026 20:13:57 -0600
+Subject: [PATCH] tools/mpy_ld.py: relocate Xtensa .rodata as data, accept
+ section addends
+
+Two Xtensa linker bugs that GCC-built natmods never reach and Rust-built
+ones reach at once.
+
+On Xtensa, rodata is a separate blob (separate_rodata), so a .rodata
+section's sec.addr is an offset into full_rodata. The relocation loop
+still sent every .rodata section to do_relocation_text, which writes
+into full_text: the fixup landed on an unrelated word at the start of
+the code, the real word in rodata was left holding its link-time value,
+and no runtime relocation was emitted for it. rustc places the jump
+table of a dense `match` in .rodata.<fn>, so the meshtastic codec came
+out with its first 0x88 bytes of text corrupted and six jump tables
+pointing at load address zero, and hard-faults on the ESP32-S3.
+Such sections now go through do_relocation_data, which writes into
+full_rodata and records the relocation against .rodata.
+
+A literal referring to an STT_SECTION symbol normally carries its
+offset in the literal word with a zero addend, and the linker asserted
+that. A reference into a mergeable pool such as .rodata.cst4 arrives
+the other way round, a zero word and the offset in the addend. Only one
+half is ever non-zero, so their sum is the offset either way.
+
+Carried by cpy-meshtastic in temp-patches/ until cpy-rust has it.
+---
+ tools/mpy_ld.py | 24 ++++++++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/tools/mpy_ld.py b/tools/mpy_ld.py
+index 282c61659c..437d081250 100755
+--- a/tools/mpy_ld.py
++++ b/tools/mpy_ld.py
+@@ -582,7 +582,14 @@ def build_got_xtensa(env):
+             # This entry is a global pointer
+             existing = struct.unpack_from("<I", sec.data, r["r_offset"])[0]
+             if s_type == "STT_SECTION":
+-                assert r["r_addend"] == 0
++                # The offset into the section can arrive in either half: the
++                # assembler usually folds it into the literal word and leaves
++                # the addend at zero, but a reference into a mergeable
++                # constant pool such as .rodata.cst4 comes back the other way
++                # round, with a zero literal and the offset in the addend.
++                # Only one of the two is ever non-zero, so their sum is the
++                # offset whichever way it was emitted.
++                existing += r["r_addend"]
+                 name = "{}+0x{:x}".format(s.section.name, existing)
+             else:
+                 assert existing == 0
+@@ -1483,10 +1490,19 @@ def link_objects(env, native_qstr_vals_len):
+             "{}: {} relocations via {}:".format(sec.filename, sec.name, sec.reloc_name),
+         )
+         for r in sec.reloc:
+-            if sec.name.startswith((".text", ".rodata")):
+-                do_relocation_text(env, sec.addr, r)
+-            elif sec.name.startswith(".data.rel.ro"):
++            if sec.name.startswith(".data.rel.ro") or (
++                env.arch.separate_rodata and sec.name.startswith(".rodata")
++            ):
++                # do_relocation_text writes to full_text and only ever to
++                # full_text. When rodata is a separate blob, sec.addr indexes
++                # full_rodata, so sending a rodata section there would apply
++                # the fixup to an unrelated offset in the code, leave the real
++                # word untouched, and emit no runtime relocation for it. Rust
++                # puts the jump table of a `match` in .rodata.<fn>, so this is
++                # reached as soon as a crate compiles a dense match.
+                 do_relocation_data(env, sec.addr, r)
++            elif sec.name.startswith((".text", ".rodata")):
++                do_relocation_text(env, sec.addr, r)
+             elif sec.name.startswith(".internal"):
+                 env.mpy_relocs.append((".text", sec.addr + r.offset, r.index))
+             else:
