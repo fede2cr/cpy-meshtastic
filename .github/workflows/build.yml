@@ -20,9 +20,12 @@
 # module, and stock `tools/mpy_ld.py` rejects the relocations rustc emits for
 # Xtensa: LLVM writes R_XTENSA_NONE no-op entries that GAS does not, encodes
 # `l32r` differently, and puts the jump table of a dense `match` in .rodata.
-# The fix is in the host linker script, so it cannot be carried here. The
-# `cpy-rust` branch has it, and is enough: nothing in this artifact needs the
-# board, the pin interrupts or the _bleio queue that live on other branches.
+# The fix is in the host linker script. The `cpy-rust` branch has most of it,
+# but still routes Xtensa .rodata relocations to the text writer. That is the
+# jump-table case, and it links a codec that hard-faults on load or on the first
+# packet. temp-patches/ carries the remaining fix and the modules job applies it.
+# Nothing else in this artifact needs the board, the pin interrupts or the
+# _bleio queue that live on other branches.
 
 name: build
 
@@ -193,6 +196,29 @@ jobs:
         # puts its own venv on PATH, so `pip` and the `python3` the build then
         # calls have to be the same interpreter.
         run: pip install pyelftools ar
+
+      - name: Fix the natmod linker
+        # cpy-rust's mpy_ld.py sends Xtensa .rodata relocations to the text
+        # writer. rustc puts every dense `match` jump table in .rodata.<fn>,
+        # so without this the codec links cleanly, corrupts its own first
+        # 0x88 bytes of code, leaves six jump tables unrelocated, and
+        # hard-faults the W12. Applied just before the build, so mpy-cross
+        # was already built from an unmodified tree. Skipped once the fork has
+        # the fix, and a patch that neither applies nor is already in fails the
+        # job instead of shipping a module nobody can load.
+        env:
+          REPO: ${{ inputs.circuitpython_repo }}
+          REF: ${{ inputs.circuitpython_ref }}
+        run: |
+          patch="$GITHUB_WORKSPACE/cpy-meshtastic/temp-patches/circuitpython-mpy_ld-xtensa-rodata.patch"
+          if git -C circuitpython apply --check "$patch" 2>/dev/null; then
+            git -C circuitpython apply "$patch"
+          elif git -C circuitpython apply --check -R "$patch" 2>/dev/null; then
+            echo "::notice::$REPO@$REF already has the mpy_ld.py fix; temp-patches/$(basename "$patch") is no longer used and can be deleted"
+          else
+            echo "::error::temp-patches/$(basename "$patch") does not apply to $REPO@$REF, and the fix is not there either"
+            exit 1
+          fi
 
       - name: Build the modules
         working-directory: cpy-meshtastic

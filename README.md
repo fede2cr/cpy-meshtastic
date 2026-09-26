@@ -42,11 +42,31 @@ can damage the amplifier.
 
 ### 1. Put CircuitPython on the board
 
-Press the reset button twice, quickly. A USB drive appears — `W12BOOT` on the
-Meshnology W12, a similar name on the Base Duo. Drag the `.uf2` firmware onto
-it. The board restarts by itself and a drive called `CIRCUITPY` appears
-instead.
+Each release carries a CircuitPython image for each board:
+`circuitpython-muzi_base_duo-*.uf2` and `circuitpython-meshnology_w12-*.uf2`.
+They are the only images that will run this project: a stock CircuitPython
+build does not know these boards and cannot load its `.mpy` files.
 
+**Base Duo.** Press the reset button twice, quickly. A USB drive appears. Drag
+the `.uf2` onto it.
+
+**Meshnology W12.** The board is sold without a UF2 bootloader, so the first
+time you have to install one over USB. Take `tinyuf2-meshnology_w12-*.zip` from
+the same release, unzip it, hold BOOT, tap reset, let go of BOOT, and run:
+
+```
+esptool.py --chip esp32s3 write_flash 0x0 combined.bin
+```
+
+This erases whatever the board was running, and the board then comes up as
+`W12BOOT` on its own every time it starts: TinyUF2 is all that is on it. Drag
+the `.uf2` onto `W12BOOT` once and from then on it starts CircuitPython. To
+update later: tap reset, and **while the LED is lit** press BOOT, and drag the
+new `.uf2` onto `W12BOOT`. Pressing reset twice does nothing
+on this board, and holding BOOT *through* reset gets you the chip's own
+bootloader instead, which is the one `esptool` talks to.
+
+Either way the board restarts by itself and a drive called `CIRCUITPY` appears.
 You only do this once per board, or when you update the firmware.
 
 ### 2. Copy the node onto CIRCUITPY

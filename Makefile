@@ -232,6 +232,12 @@ firmware-clean:
 # The export line is not optional -- the Xtensa compiler and the `esp` rustc
 # fork are both only on PATH after it, and upstream rustc has no Xtensa
 # backend at all.
+#
+# MPY_DIR's tools/mpy_ld.py has to relocate Xtensa .rodata as data. The Rust
+# puts its jump tables there, and a linker without the fix builds a codec that
+# hard-faults. fede2cr/circuitpython@cpy-rust does not have the fix yet;
+#   git -C $(MPY_DIR) apply $(CURDIR)/temp-patches/circuitpython-mpy_ld-xtensa-rodata.patch
+# adds it, and CI applies the same patch.
 W12_DIST ?= dist-w12
 
 .PHONY: w12

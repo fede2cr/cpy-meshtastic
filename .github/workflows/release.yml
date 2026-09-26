@@ -81,9 +81,10 @@ jobs:
             ```
 
             `combined.bin` is in `tinyuf2-meshnology_w12-*.zip`. This erases
-            what was on the board. After that, and for every update: tap
-            reset, and while the LED is lit press BOOT. `W12BOOT` appears;
-            drag the `.uf2` onto it. Double-tap reset does **not** work on this
+            what was on the board, so it then comes up as `W12BOOT` by itself
+            at every start until the `.uf2` is dragged onto it once. To update
+            later: tap reset, and while the LED is lit press BOOT, then drag
+            the new `.uf2` onto `W12BOOT`. Double-tap reset does **not** work on this
             board. `update-tinyuf2-meshnology_w12-*.uf2` updates a TinyUF2
             that is already installed, dragged onto `W12BOOT`.
 
